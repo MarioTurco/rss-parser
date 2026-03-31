@@ -2,8 +2,8 @@ from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 from datetime import datetime, timedelta
-from rss.rss_tasks import scrape_rss_feed, load_rss_items_to_db
-from rss.setup_tables import createRssTable
+from rss.rss_tasks import get_list_of_rss_feeds, scrape_rss_feed, load_rss_items_to_db
+from rss.setup_tables import createRssTable, createRssSourceTable
 
 
 default_args = {
@@ -23,23 +23,32 @@ dag = DAG(
     default_args=default_args
 )
 
+create_rss_source_table_task = SQLExecuteQueryOperator(
+    task_id='create_rss_source_table_task',
+    sql=createRssSourceTable(),
+    dag=dag,
+    conn_id='rss_db'
+)
 
-create_table_task = SQLExecuteQueryOperator(
-    task_id='create_rss_table',
+
+create_rss_items_table_task = SQLExecuteQueryOperator(
+    task_id='create_rss_items_table_task',
     sql=createRssTable(),
     dag=dag,
     conn_id='rss_db'
+)
+
+
+get_active_sources_task = PythonOperator(
+    task_id='get_active_sources_task',
+    dag=dag,
+    python_callable=get_list_of_rss_feeds
 )
 
 scrape_rss_feed_task = PythonOperator(
     task_id='scrape_rss_feed_task',
     dag=dag,
     python_callable=scrape_rss_feed,
-    op_kwargs={
-        'rss_url': 'https://allaboutdata.substack.com/feed'
-    },
-    #TODO do i need a pre-step that loads all the feed urls from a database table 
-    # and then dynamically creates tasks for each feed url? 
 )
 
 load_rss_data_to_db_task = PythonOperator(
@@ -49,4 +58,4 @@ load_rss_data_to_db_task = PythonOperator(
 )
 
 
-create_table_task >> scrape_rss_feed_task >> load_rss_data_to_db_task
+[create_rss_items_table_task, create_rss_source_table_task] >> get_active_sources_task >> scrape_rss_feed_task >> load_rss_data_to_db_task

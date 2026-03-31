@@ -1,20 +1,20 @@
 from rss.models.RssItem import RssItem
 from typing import List
 from airflow.providers.postgres.hooks.postgres import PostgresHook
-
-#TODO for now let's scrape a single hard coded link 
-#TODO we can later extend this to scrape multiple feeds and store the feed urls in a database table
-
+from rss.common import read_query
 
 def get_list_of_rss_feeds() -> List[str]:
-    #TODO implement this function to retrieve the list of RSS feed URLs from a database table
-    return [
-        "https://allaboutdata.substack.com/feed",
-        "https://www.theseattledataguy.com/data-science-consulting-blog/feed",
-        
-        ]
+    query = read_query("dags/rss/sql/pipeline/rss_scraper_dag/get_active_sources.sql") #TODO parametrize path
+    pg_hook = PostgresHook(postgres_conn_id="rss_db")
+    conn = pg_hook.get_conn()
+    cursor = conn.cursor()
+    cursor.execute(query)
+    results = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return [row[0] for row in results] 
 
-def scrape_rss_feed(rss_url:str) -> List[RssItem]:
+def scrape_rss_feed(**context) -> List[RssItem]:
     """
     Scrapes the RSS feed from the given URL and returns a list of entries.
     
@@ -24,13 +24,21 @@ def scrape_rss_feed(rss_url:str) -> List[RssItem]:
         list: A list of RssItem objects from the RSS feed.
     """
     import feedparser
-    feed = feedparser.parse(rss_url)
+
+    rss_links = context['ti'].xcom_pull(task_ids='get_active_sources_task')
+    
+    if not rss_links:
+        print("Nessun link di RSS da elaborare.")
+        return
+    
     rss_items = []
-    for entry in feed.entries:
-        rss_item = RssItem(
-            title=entry.title,
-            description=entry.description if 'description' in entry else None,
-            link=entry.link,
+    for rss_url in rss_links:
+        feed = feedparser.parse(rss_url)
+        for entry in feed.entries:
+            rss_item = RssItem(
+                title=entry.title,
+                description=entry.description if 'description' in entry else None,
+                link=entry.link,
             feed_url=rss_url,
             pub_date=entry.published,
             source=feed.feed.title if 'title' in feed.feed else 'Unknown Source',
@@ -53,11 +61,7 @@ def load_rss_items_to_db(**context):
     conn = pg_hook.get_conn()
     cursor = conn.cursor()
 
-    insert_query = """
-    INSERT INTO rss_items (title, link, description, pub_date, source, category, feed_url, author)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-    ON CONFLICT (title, link) DO NOTHING
-    """
+    insert_query =  read_query("dags/rss/sql/pipeline/rss_scraper_dag/insert_rss_item.sql") #TODO parametrize path
 
     data = [
         (item['title'], item['link'], item['description'], item['pub_date'], item['source'], item['category'], item['feed_url'], item['author'])
